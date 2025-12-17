@@ -813,11 +813,25 @@ def apply_best_combos_to_backtest(
     """
     Seçilen combo setlerini GERCEK_BACKTEST5 satırlarına uygula ve listeleri üret (backtest4 mantığı).
     
-    ÖNEMLİ FİX: force_latest_by_date aktif ise, sadece en güncel Analiz_Tarihi_str tarihindeki
-    satırları kullanarak seçim yapar. Bu sayede her gün farklı semboller seçilir.
+    ÖNEMLİ FİX (2025-12-17): 
+    - SORUN: Önceden tüm backtest tarihlerindeki satırlar kullanılıyordu, bu yüzden aynı semboller
+      her gün tekrar tekrar seçiliyordu (örn. 2025-10-21 tarihli veriler sürekli çıkıyordu).
+    - ÇÖZÜM: Artık sadece en güncel Analiz_Tarihi_str tarihindeki satırlar kullanılıyor.
+      Bu sayede her gün yeni backtest çalıştırıldığında, o günün verileri kullanılarak
+      farklı semboller seçilir.
+    - SONUÇ: Günlük liste çıktıları artık güncel tarihli verileri gösterecek.
+    
+    Args:
+        df_all: GERCEK_BACKTEST5 dosyasından yüklenen backtest verileri
+        df_best_5_low/high/15_low: Seçilmiş en iyi combo kuralları
+        today_str: Çıktı dosyaları için tarih etiketi (YYYY-MM-DD)
+        folder: Çıktıların kaydedileceği klasör
+        verbose: Detaylı log çıktısı aktif mi
     """
     
     # FİX: En güncel tarihe göre filtrele
+    rows_before_filter = len(df_all)
+    
     if COL_ANALIZ_TARIHI in df_all.columns:
         # Tarih kolonunu parse et
         df_all_temp = df_all.copy()
@@ -832,12 +846,16 @@ def apply_best_combos_to_backtest(
             # Tarih kolonunu string'e geri çevir
             df_all[COL_ANALIZ_TARIHI] = df_all[COL_ANALIZ_TARIHI].dt.strftime("%Y-%m-%d")
             
+            print(f"\n[BİLGİ] Date Filtering Applied:")
+            print(f"  - Rows before filter: {rows_before_filter}")
+            print(f"  - Latest Analiz_Tarihi_str: {latest_date.strftime('%Y-%m-%d')}")
+            print(f"  - Rows after filtering to latest date: {len(df_all)}")
+            
             if verbose:
-                print(f"\n[VERBOSE] Date Filtering:")
-                print(f"  - Latest Analiz_Tarihi_str found: {latest_date.strftime('%Y-%m-%d')}")
-                print(f"  - Rows after filtering to latest date: {len(df_all)}")
+                print(f"\n[VERBOSE] Date Filtering Details:")
                 if COL_SYMBOL in df_all.columns:
-                    print(f"  - Unique symbols after date filter: {df_all[COL_SYMBOL].nunique()}")
+                    print(f"  - Unique symbols before filter: {df_all_temp[COL_SYMBOL].nunique()}")
+                    print(f"  - Unique symbols after filter: {df_all[COL_SYMBOL].nunique()}")
         else:
             if verbose:
                 print(f"\n[VERBOSE] WARNING: Could not parse dates from {COL_ANALIZ_TARIHI}, using all rows")
@@ -948,7 +966,13 @@ def apply_best_combos_to_backtest(
     df_5_low = _apply_combo_set(df_all, df_best_5_low, horizon="5_low")
     if "Beklenen_5g_Getiri_%" in df_5_low.columns:
         list1 = df_5_low.dropna(subset=["Beklenen_5g_Getiri_%"]).copy()
+        before_thresh = len(list1)
         list1 = list1[list1["Beklenen_5g_Getiri_%"] >= THRESH_5D_MIN]
+        
+        if verbose and before_thresh > 0:
+            print(f"\n[VERBOSE] List 1 (5g low risk) filtering:")
+            print(f"  - Rows with combo match: {before_thresh}")
+            print(f"  - Rows after threshold filter (>= {THRESH_5D_MIN}%): {len(list1)}")
 
         # Teknik kolonlar sayıya çevrilip sıralamaya eklenir
         for col in ["MACD_Signal_5g", "PUANLAMA_V4_5g"]:
