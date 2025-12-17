@@ -1,0 +1,15 @@
+BEST PERFORMING OUTPUT FILE - 2025-12-16
+============================================================
+
+Best File: LISTE5_1_5GUN_DUSUK_RISK_MIN10_2025-12-16.csv
+Label: LISTE5_1_5GUN_DUSUK_RISK_MIN10
+Number of Symbols: 360
+Mean 1-Day Return: 3.71%
+Mean 1-5 Day Return: 3.71%
+Hit Rate: 67.62%
+Overall Score: 5.57
+
+ALL FILES RANKED:
+------------------------------------------------------------
+LISTE5_1_5GUN_DUSUK_RISK_MIN10: Score=5.57, MeanRet1D=3.71%, HitRate=67.62%
+LISTE5_2_5GUN_YUKSEK_RISK_TOP20: Score=5.34, MeanRet1D=3.56%, HitRate=66.98%

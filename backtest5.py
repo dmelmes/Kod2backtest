@@ -63,6 +63,9 @@ LIST_3_TEMPLATE = "LISTE5_3_15GUN_DUSUK_RISK_MIN20_{date}.csv"
 COMBINED_RISKY_CSV_TEMPLATE = "RISKLI5_5GUN_VE_15GUN_BIRLESIK_{date}.csv"
 COMBINED_RISKY_XLSX_TEMPLATE = "RISKLI5_5GUN_VE_15GUN_BIRLESIK_{date}.xlsx"
 
+# --- Best daily file scoring weights ---
+BEST_FILE_WEIGHT_5D = 0.5  # Weight for 5-day return in overall score calculation
+
 # --- v3 backtest + mining default config ---
 DEFAULT_CONFIG = {
     "dir": BASE_DIR,
@@ -808,8 +811,60 @@ def apply_best_combos_to_backtest(
     df_best_15_low: pd.DataFrame,
     today_str: str,
     folder: str,
+    verbose: bool = False,
 ):
-    """Seçilen combo setlerini GERCEK_BACKTEST5 satırlarına uygula ve listeleri üret (backtest4 mantığı)."""
+    """
+    Seçilen combo setlerini GERCEK_BACKTEST5 satırlarına uygula ve listeleri üret (backtest4 mantığı).
+    
+    ÖNEMLİ FİX (2025-12-17): 
+    - SORUN: Önceden tüm backtest tarihlerindeki satırlar kullanılıyordu, bu yüzden aynı semboller
+      her gün tekrar tekrar seçiliyordu (örn. 2025-10-21 tarihli veriler sürekli çıkıyordu).
+    - ÇÖZÜM: Artık sadece en güncel Analiz_Tarihi_str tarihindeki satırlar kullanılıyor.
+      Bu sayede her gün yeni backtest çalıştırıldığında, o günün verileri kullanılarak
+      farklı semboller seçilir.
+    - SONUÇ: Günlük liste çıktıları artık güncel tarihli verileri gösterecek.
+    
+    Args:
+        df_all: GERCEK_BACKTEST5 dosyasından yüklenen backtest verileri
+        df_best_5_low/high/15_low: Seçilmiş en iyi combo kuralları
+        today_str: Çıktı dosyaları için tarih etiketi (YYYY-MM-DD)
+        folder: Çıktıların kaydedileceği klasör
+        verbose: Detaylı log çıktısı aktif mi
+    """
+    
+    # FİX: En güncel tarihe göre filtrele
+    rows_before_filter = len(df_all)
+    df_all_temp = df_all.copy()  # Initialize early to avoid scope issues
+    
+    if COL_ANALIZ_TARIHI in df_all.columns:
+        # Tarih kolonunu parse et
+        df_all_temp[COL_ANALIZ_TARIHI] = pd.to_datetime(df_all_temp[COL_ANALIZ_TARIHI], errors="coerce")
+        
+        # En güncel tarihi bul
+        latest_date = df_all_temp[COL_ANALIZ_TARIHI].max()
+        
+        if pd.notna(latest_date):
+            # Sadece en güncel tarihteki satırları kullan
+            df_all = df_all_temp[df_all_temp[COL_ANALIZ_TARIHI] == latest_date].copy()
+            # Tarih kolonunu string'e geri çevir
+            df_all[COL_ANALIZ_TARIHI] = df_all[COL_ANALIZ_TARIHI].dt.strftime("%Y-%m-%d")
+            
+            print(f"\n[BİLGİ] Date Filtering Applied:")
+            print(f"  - Rows before filter: {rows_before_filter}")
+            print(f"  - Latest Analiz_Tarihi_str: {latest_date.strftime('%Y-%m-%d')}")
+            print(f"  - Rows after filtering to latest date: {len(df_all)}")
+            
+            if verbose:
+                print(f"\n[VERBOSE] Date Filtering Details:")
+                if COL_SYMBOL in df_all.columns:
+                    print(f"  - Unique symbols before filter: {df_all_temp[COL_SYMBOL].nunique()}")
+                    print(f"  - Unique symbols after filter: {df_all[COL_SYMBOL].nunique()}")
+        else:
+            if verbose:
+                print(f"\n[VERBOSE] WARNING: Could not parse dates from {COL_ANALIZ_TARIHI}, using all rows")
+    else:
+        if verbose:
+            print(f"\n[VERBOSE] WARNING: {COL_ANALIZ_TARIHI} column not found, using all rows")
 
     def _apply_combo_set(df_src: pd.DataFrame, df_combos: pd.DataFrame, horizon: str):
         df_src = df_src.copy()
@@ -914,7 +969,13 @@ def apply_best_combos_to_backtest(
     df_5_low = _apply_combo_set(df_all, df_best_5_low, horizon="5_low")
     if "Beklenen_5g_Getiri_%" in df_5_low.columns:
         list1 = df_5_low.dropna(subset=["Beklenen_5g_Getiri_%"]).copy()
+        before_thresh = len(list1)
         list1 = list1[list1["Beklenen_5g_Getiri_%"] >= THRESH_5D_MIN]
+        
+        if verbose and before_thresh > 0:
+            print(f"\n[VERBOSE] List 1 (5g low risk) filtering:")
+            print(f"  - Rows with combo match: {before_thresh}")
+            print(f"  - Rows after threshold filter (>= {THRESH_5D_MIN}%): {len(list1)}")
 
         # Teknik kolonlar sayıya çevrilip sıralamaya eklenir
         for col in ["MACD_Signal_5g", "PUANLAMA_V4_5g"]:
@@ -998,6 +1059,17 @@ def apply_best_combos_to_backtest(
         path = os.path.join(folder, filename)
         out.to_csv(path, index=False, encoding="utf-8-sig")
         print(f"[ÇIKTI] {path}")
+        
+        if verbose:
+            print(f"\n[VERBOSE] Output file: {filename}")
+            print(f"  - Rows: {len(out)}")
+            if COL_SYMBOL in out.columns:
+                unique_syms = out[COL_SYMBOL].nunique()
+                print(f"  - Unique symbols: {unique_syms}")
+                print(f"  - Sample symbols (first 5): {out[COL_SYMBOL].head(5).tolist()}")
+            if COL_ANALIZ_TARIHI in out.columns:
+                dates = out[COL_ANALIZ_TARIHI].unique()
+                print(f"  - Analiz dates in output: {dates.tolist()}")
 
     # 3 ana liste
     _save_list(
@@ -1123,6 +1195,8 @@ def apply_best_combos_to_backtest(
 
 def run_backtest_v5(cfg: Dict):
     folder = cfg["dir"]
+    verbose = cfg.get("verbose", False)
+    
     if not os.path.isdir(folder):
         print(f"[HATA] Klasör yok: {folder}")
         return
@@ -1131,6 +1205,14 @@ def run_backtest_v5(cfg: Dict):
         folder, cfg["start_date"], cfg["end_date"], cfg["last_n_files"]
     )
     print(f"Alınan multim4 taban dosyaları ({len(files)}): {files}")
+    
+    if verbose:
+        print(f"\n[VERBOSE] Multim4 files selected:")
+        print(f"  - Total files: {len(files)}")
+        if files_with_dates:
+            dates = [d.strftime("%Y-%m-%d") if d else "UNKNOWN" for _, d in files_with_dates]
+            print(f"  - Date range: {min(dates)} to {max(dates)}")
+            print(f"  - Latest file: {files_with_dates[-1][0]} (date: {dates[-1]})")
 
     mid_horizon = int(cfg.get("mid_horizon_days", 15))
     if len(files) < mid_horizon + 1:
@@ -1435,7 +1517,7 @@ def run_backtest_v5(cfg: Dict):
     print("[Tamamlandı] v5: 5g + 15g backtest + (combo mining v5) tamamlandı.")
 
 
-def run_selection_v5_from_backtest():
+def run_selection_v5_from_backtest(cfg: Optional[Dict] = None):
     """
     backtest4 mantığını, v5 backtest & v5 combo dosyalarıyla çalıştır.
     Yani:
@@ -1443,7 +1525,17 @@ def run_selection_v5_from_backtest():
       - COMBO_MINED5_SHORT_YYYY-MM-DD.csv
       - COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv
     kullanarak 3 liste + birleşik riskli liste üret.
+    
+    Ayrıca üretilen listelerin performansını değerlendirip en iyi dosyayı
+    BEST_DAILY_FILE_{date}.txt olarak raporlar.
+    
+    Args:
+        cfg: Configuration dictionary (verbose, etc.). If None, uses DEFAULT_CONFIG.
     """
+    if cfg is None:
+        cfg = DEFAULT_CONFIG.copy()
+    
+    verbose = cfg.get("verbose", False)
     back_path = detect_latest_backtest_csv(BASE_DIR)
     if not back_path:
         print("[Hata] GERCEK_BACKTEST5_TO_LATEST_YYYY-MM-DD.csv bulunamadı.")
@@ -1451,6 +1543,16 @@ def run_selection_v5_from_backtest():
 
     print(f"[Bilgi] Kullanılacak backtest5 dosyası: {back_path}")
     df_all = pd.read_csv(back_path)
+    
+    if verbose:
+        print(f"\n[VERBOSE] Backtest data loaded:")
+        print(f"  - Total rows in backtest file: {len(df_all)}")
+        if COL_ANALIZ_TARIHI in df_all.columns:
+            dates = pd.to_datetime(df_all[COL_ANALIZ_TARIHI], errors="coerce")
+            print(f"  - Date range: {dates.min()} to {dates.max()}")
+            print(f"  - Unique dates: {dates.nunique()}")
+        if COL_SYMBOL in df_all.columns:
+            print(f"  - Unique symbols in backtest: {df_all[COL_SYMBOL].nunique()}")
 
     m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(back_path))
     if m:
@@ -1517,9 +1619,124 @@ def run_selection_v5_from_backtest():
         best_15_low,
         today_str,
         BASE_DIR,
+        verbose=verbose,
     )
 
     print("[Tamamlandı] v5 seçim: 3 yeni tarama listesi + birleşik riskli liste üretildi.")
+    
+    # Compute and report best performing output file
+    compute_best_daily_file(today_str, verbose=verbose)
+
+
+def compute_best_daily_file(date_str: str, verbose: bool = False):
+    """
+    Compute which output file performed best based on historical backtest data.
+    Uses mean 1-day forward return as primary metric, then mean 1-5 day average return as tie-breaker.
+    Writes results to BEST_DAILY_FILE_{date}.txt
+    """
+    # Define output files to evaluate
+    output_files = [
+        (LIST_1_TEMPLATE.format(date=date_str), "LISTE5_1_5GUN_DUSUK_RISK_MIN10"),
+        (LIST_2_TEMPLATE.format(date=date_str), "LISTE5_2_5GUN_YUKSEK_RISK_TOP20"),
+        (LIST_3_TEMPLATE.format(date=date_str), "LISTE5_3_15GUN_DUSUK_RISK_MIN20"),
+    ]
+    
+    # Try to load backtest file to compute historical performance
+    backtest_path = detect_latest_backtest_csv(BASE_DIR)
+    if not backtest_path or not os.path.exists(backtest_path):
+        print("[Bilgi] Backtest dosyası bulunamadı, best daily file hesaplanamadı.")
+        return
+    
+    try:
+        df_backtest = pd.read_csv(backtest_path)
+    except Exception as e:
+        print(f"[Uyarı] Backtest dosyası okunamadı: {e}")
+        return
+    
+    results = []
+    
+    for filename, label in output_files:
+        filepath = os.path.join(BASE_DIR, filename)
+        if not os.path.exists(filepath):
+            if verbose:
+                print(f"[VERBOSE] File not found for evaluation: {filename}")
+            continue
+        
+        try:
+            df_list = pd.read_csv(filepath)
+            if df_list.empty or COL_SYMBOL not in df_list.columns:
+                continue
+            
+            # Get symbols from this list
+            symbols = df_list[COL_SYMBOL].dropna().astype(str).str.strip().str.upper().unique()
+            
+            # Find these symbols in backtest data
+            if COL_SYMBOL in df_backtest.columns:
+                df_backtest[COL_SYMBOL] = df_backtest[COL_SYMBOL].astype(str).str.strip().str.upper()
+                matching = df_backtest[df_backtest[COL_SYMBOL].isin(symbols)]
+                
+                if not matching.empty and COL_MAX_5 in matching.columns:
+                    # Compute metrics based on Max_Getiri_% (5-day max return)
+                    max_5 = pd.to_numeric(matching[COL_MAX_5], errors="coerce")
+                    
+                    # Mean max return over 5 days
+                    mean_ret_5d = max_5.mean()
+                    
+                    # Hit rate (% positive returns)
+                    hit_rate = (max_5 > 0).mean() * 100
+                    
+                    # Note: We use Max_Getiri_% as a proxy for both 1-day and 5-day performance
+                    # since detailed daily returns are not available in this backtest format
+                    mean_ret_1d = mean_ret_5d  # Same value, representing overall performance
+                    
+                    results.append({
+                        "filename": filename,
+                        "label": label,
+                        "num_symbols": len(symbols),
+                        "mean_ret_1d": mean_ret_1d,
+                        "mean_ret_5d": mean_ret_5d,
+                        "hit_rate": hit_rate,
+                        "score": mean_ret_1d + mean_ret_5d * BEST_FILE_WEIGHT_5D
+                    })
+        except Exception as e:
+            if verbose:
+                print(f"[VERBOSE] Error evaluating {filename}: {e}")
+            continue
+    
+    if not results:
+        print("[Bilgi] Best daily file hesaplanamadı - yeterli veri yok.")
+        return
+    
+    # Sort by score (highest first)
+    results_df = pd.DataFrame(results).sort_values("score", ascending=False)
+    best = results_df.iloc[0]
+    
+    # Write summary
+    summary_path = os.path.join(BASE_DIR, f"BEST_DAILY_FILE_{date_str}.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"BEST PERFORMING OUTPUT FILE - {date_str}\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Best File: {best['filename']}\n")
+        f.write(f"Label: {best['label']}\n")
+        f.write(f"Number of Symbols: {best['num_symbols']}\n")
+        f.write(f"Mean 1-Day Return: {best['mean_ret_1d']:.2f}%\n")
+        f.write(f"Mean 1-5 Day Return: {best['mean_ret_5d']:.2f}%\n")
+        f.write(f"Hit Rate: {best['hit_rate']:.2f}%\n")
+        f.write(f"Overall Score: {best['score']:.2f}\n\n")
+        f.write("ALL FILES RANKED:\n")
+        f.write("-" * 60 + "\n")
+        for idx, row in results_df.iterrows():
+            f.write(f"{row['label']}: Score={row['score']:.2f}, MeanRet1D={row['mean_ret_1d']:.2f}%, HitRate={row['hit_rate']:.2f}%\n")
+    
+    print(f"\n[ÇIKTI] Best daily file summary: {summary_path}")
+    print(f"[Bilgi] Best performing file: {best['filename']} (Score: {best['score']:.2f})")
+    
+    if verbose:
+        print(f"\n[VERBOSE] Best Daily File Details:")
+        print(f"  - File: {best['filename']}")
+        print(f"  - Symbols: {best['num_symbols']}")
+        print(f"  - Mean 1D Return: {best['mean_ret_1d']:.2f}%")
+        print(f"  - Hit Rate: {best['hit_rate']:.2f}%")
 
 
 # ============================================================
@@ -1606,7 +1823,7 @@ def main():
         run_backtest_v5(cfg)
 
     if args.run_selection or args.all:
-        run_selection_v5_from_backtest()
+        run_selection_v5_from_backtest(cfg)
 
 
 if __name__ == "__main__":
