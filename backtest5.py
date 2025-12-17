@@ -1571,7 +1571,11 @@ def run_selection_v5_from_backtest():
         return
     
     # Normalize date strings to YYYY-MM-DD format
-    df_all[COL_ANALIZ_TARIHI] = pd.to_datetime(df_all[COL_ANALIZ_TARIHI], errors='coerce').dt.strftime('%Y-%m-%d')
+    df_all[COL_ANALIZ_TARIHI] = pd.to_datetime(df_all[COL_ANALIZ_TARIHI], errors='coerce')
+    # Handle NaT values - keep them as empty strings for filtering
+    mask_nat = df_all[COL_ANALIZ_TARIHI].isna()
+    df_all[COL_ANALIZ_TARIHI] = df_all[COL_ANALIZ_TARIHI].dt.strftime('%Y-%m-%d')
+    df_all.loc[mask_nat, COL_ANALIZ_TARIHI] = ''
     
     # Filter to selection date only
     df_filtered = df_all[df_all[COL_ANALIZ_TARIHI] == selection_date_str].copy()
