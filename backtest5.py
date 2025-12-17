@@ -200,7 +200,7 @@ def _read_csv_any(path: str, on_bad_lines="skip") -> Optional[pd.DataFrame]:
     """Farklı encoding denemeleriyle CSV oku."""
     for enc in ["utf-8-sig", "utf-16", "latin1", "cp1254", "cp1252"]:
         try:
-            df = pd.read_csv(path, encoding=enc, engine="python", on_bad_lines=on_bad_lines)
+            df = pd.read_csv(path, encoding=enc, engine="python", on_bad_lines=on_bad_lines, low_memory=False)
             if df is not None:
                 df.columns = [str(c).strip() for c in df.columns]
                 return df
@@ -480,6 +480,101 @@ def detect_latest_backtest_csv(folder: str) -> Optional[str]:
     candidates.sort(key=lambda x: x[0])
     _, latest_file = candidates[-1]
     return os.path.join(folder, latest_file)
+
+
+def detect_latest_multim4(folder: str) -> Optional[Tuple[str, str]]:
+    """
+    Klasördeki en güncel multim4_YYYY-MM-DD.csv dosyasını bulur.
+    Returns: (date_str, full_path) tuple or None
+    """
+    pattern = re.compile(r"^multim4_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    candidates = []
+    for fname in os.listdir(folder):
+        m = pattern.match(fname)
+        if m:
+            date_str = m.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    _, date_str, file_path = candidates[-1]
+    return (date_str, file_path)
+
+
+def detect_latest_combo_files(folder: str, target_date: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Klasördeki COMBO_MINED5_SHORT_YYYY-MM-DD.csv ve COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv 
+    dosyalarını bulur. Önce target_date'i arar, bulamazsa en güncel tarihi kullanır.
+    
+    Returns: (short_path, mid_path) tuple
+    """
+    pattern_short = re.compile(r"^COMBO_MINED5_SHORT_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    pattern_mid = re.compile(r"^COMBO_MINED5_MID_15GUN_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    
+    short_candidates = []
+    mid_candidates = []
+    
+    for fname in os.listdir(folder):
+        m_short = pattern_short.match(fname)
+        if m_short:
+            date_str = m_short.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                short_candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+        
+        m_mid = pattern_mid.match(fname)
+        if m_mid:
+            date_str = m_mid.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                mid_candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+    
+    if not short_candidates or not mid_candidates:
+        return None, None
+    
+    short_candidates.sort(key=lambda x: x[0])
+    mid_candidates.sort(key=lambda x: x[0])
+    
+    # Try to find target_date first
+    short_path = None
+    mid_path = None
+    
+    if target_date:
+        for d, date_str, path in short_candidates:
+            if date_str == target_date:
+                short_path = path
+                break
+        for d, date_str, path in mid_candidates:
+            if date_str == target_date:
+                mid_path = path
+                break
+    
+    # Fallback to latest available, but both must have the same date
+    if not short_path or not mid_path:
+        # Find common dates between short and mid
+        short_dates = {date_str: path for d, date_str, path in short_candidates}
+        mid_dates = {date_str: path for d, date_str, path in mid_candidates}
+        common_dates = sorted(set(short_dates.keys()) & set(mid_dates.keys()))
+        
+        if common_dates:
+            latest_common_date = common_dates[-1]
+            short_path = short_dates[latest_common_date]
+            mid_path = mid_dates[latest_common_date]
+            if target_date and latest_common_date != target_date:
+                print(f"[Uyarı] Hedef tarih {target_date} için combo dosyaları bulunamadı. "
+                      f"En güncel ortak tarih kullanılıyor: {latest_common_date}")
+        else:
+            return None, None
+    
+    return short_path, mid_path
 
 
 def smart_to_numeric_b4(series: pd.Series) -> pd.Series:
@@ -1443,37 +1538,69 @@ def run_selection_v5_from_backtest():
       - COMBO_MINED5_SHORT_YYYY-MM-DD.csv
       - COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv
     kullanarak 3 liste + birleşik riskli liste üret.
+    
+    ÖNEMLİ: Seçim tarihi en güncel multim4_YYYY-MM-DD.csv dosyasından alınır,
+    backtest dosya adından DEĞİL.
     """
+    # 1. En güncel multim4 dosyasından seçim tarihini belirle
+    multim_info = detect_latest_multim4(BASE_DIR)
+    if not multim_info:
+        print("[Hata] multim4_YYYY-MM-DD.csv dosyası bulunamadı. Seçim yapılamaz.")
+        return
+    
+    selection_date_str, multim_path = multim_info
+    print(f"[Bilgi] Seçim tarihi (en güncel multim4): {selection_date_str}")
+    print(f"[Bilgi] Multim4 dosyası: {multim_path}")
+
+    # 2. Backtest dosyasını yükle
     back_path = detect_latest_backtest_csv(BASE_DIR)
     if not back_path:
         print("[Hata] GERCEK_BACKTEST5_TO_LATEST_YYYY-MM-DD.csv bulunamadı.")
         return
 
     print(f"[Bilgi] Kullanılacak backtest5 dosyası: {back_path}")
-    df_all = pd.read_csv(back_path)
+    df_all = pd.read_csv(back_path, low_memory=False)
+    
+    # Symbol normalization for consistency
+    if COL_SYMBOL in df_all.columns:
+        df_all[COL_SYMBOL] = df_all[COL_SYMBOL].astype(str).str.strip().str.upper()
 
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(back_path))
-    if m:
-        today_str = m.group(1)
-    else:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-    # V5 combo dosyaları
-    combo_short_path = os.path.join(BASE_DIR, f"COMBO_MINED5_SHORT_{today_str}.csv")
-    combo_mid_path = os.path.join(BASE_DIR, f"COMBO_MINED5_MID_15GUN_{today_str}.csv")
-
-    if not os.path.isfile(combo_short_path):
-        print(f"[Hata] {combo_short_path} bulunamadı.")
+    # 3. Backtest verisini seçim tarihine göre filtrele
+    if COL_ANALIZ_TARIHI not in df_all.columns:
+        print(f"[Hata] Backtest dosyasında '{COL_ANALIZ_TARIHI}' kolonu bulunamadı.")
         return
-    if not os.path.isfile(combo_mid_path):
-        print(f"[Hata] {combo_mid_path} bulunamadı.")
+    
+    # Normalize date strings to YYYY-MM-DD format
+    df_all[COL_ANALIZ_TARIHI] = pd.to_datetime(df_all[COL_ANALIZ_TARIHI], errors='coerce').dt.strftime('%Y-%m-%d')
+    
+    # Filter to selection date only
+    df_filtered = df_all[df_all[COL_ANALIZ_TARIHI] == selection_date_str].copy()
+    
+    print(f"[Bilgi] Backtest toplam satır sayısı: {len(df_all)}")
+    print(f"[Bilgi] {selection_date_str} tarihine ait satır sayısı: {len(df_filtered)}")
+    
+    if df_filtered.empty:
+        print(f"[HATA] Seçim tarihi {selection_date_str} için backtest verisinde satır bulunamadı.")
+        print(f"       LISTE5_* ve RISKLI5_* dosyaları üretilmeyecek.")
+        print(f"       Lütfen backtest5.py'yi --run-backtest ile çalıştırarak güncel backtest verisi oluşturun.")
+        return
+    
+    # Use filtered dataframe for selection
+    df_selection = df_filtered
+
+    # 4. Combo dosyalarını bul (önce selection_date için, yoksa en güncel ortak tarihi kullan)
+    combo_short_path, combo_mid_path = detect_latest_combo_files(BASE_DIR, selection_date_str)
+    
+    if not combo_short_path or not combo_mid_path:
+        print(f"[Hata] COMBO_MINED5 dosyaları bulunamadı (hedef tarih: {selection_date_str}).")
+        print("       Lütfen backtest5.py'yi --run-backtest ile çalıştırarak combo dosyalarını oluşturun.")
         return
 
     print(f"[Bilgi] Kullanılacak combo5 short dosyası: {combo_short_path}")
     print(f"[Bilgi] Kullanılacak combo5 mid dosyası:   {combo_mid_path}")
 
-    combos_short_df = pd.read_csv(combo_short_path)
-    combos_mid_df = pd.read_csv(combo_mid_path)
+    combos_short_df = pd.read_csv(combo_short_path, low_memory=False)
+    combos_mid_df = pd.read_csv(combo_mid_path, low_memory=False)
 
     if "conditions" not in combos_short_df.columns or "conditions" not in combos_mid_df.columns:
         print("[Hata] COMBO_MINED5 dosyalarında 'conditions' kolonu yok.")
@@ -1488,7 +1615,7 @@ def run_selection_v5_from_backtest():
         ignore_index=True,
     )
 
-    df_stats_all = compute_combo_stats(df_all, combos_all_df)
+    df_stats_all = compute_combo_stats(df_selection, combos_all_df)
     if df_stats_all.empty:
         print("[Hata] Hiç geçerli combo5 istatistiği üretilemedi.")
         return
@@ -1497,25 +1624,26 @@ def run_selection_v5_from_backtest():
 
     # Seçilen en iyi kuralları geri CSV olarak da saklayabiliriz (opsiyonel):
     if not best_5_low.empty:
-        path_5_low = os.path.join(BASE_DIR, BEST_5D_LOW_TEMPLATE.format(date=today_str))
+        path_5_low = os.path.join(BASE_DIR, BEST_5D_LOW_TEMPLATE.format(date=selection_date_str))
         best_5_low.to_csv(path_5_low, index=False, encoding="utf-8-sig")
         print(f"[ÇIKTI] {path_5_low}")
     if not best_5_high.empty:
-        path_5_high = os.path.join(BASE_DIR, BEST_5D_HIGH_TEMPLATE.format(date=today_str))
+        path_5_high = os.path.join(BASE_DIR, BEST_5D_HIGH_TEMPLATE.format(date=selection_date_str))
         best_5_high.to_csv(path_5_high, index=False, encoding="utf-8-sig")
         print(f"[ÇIKTI] {path_5_high}")
     if not best_15_low.empty:
-        path_15_low = os.path.join(BASE_DIR, BEST_15D_LOW_TEMPLATE.format(date=today_str))
+        path_15_low = os.path.join(BASE_DIR, BEST_15D_LOW_TEMPLATE.format(date=selection_date_str))
         best_15_low.to_csv(path_15_low, index=False, encoding="utf-8-sig")
         print(f"[ÇIKTI] {path_15_low}")
 
     # backtest4 ile aynı liste üretim mantığı ama v5 isimleriyle
+    # Use selection_date_str for output file names
     apply_best_combos_to_backtest(
-        df_all,
+        df_selection,
         best_5_low,
         best_5_high,
         best_15_low,
-        today_str,
+        selection_date_str,
         BASE_DIR,
     )
 
