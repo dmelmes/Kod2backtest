@@ -63,6 +63,9 @@ LIST_3_TEMPLATE = "LISTE5_3_15GUN_DUSUK_RISK_MIN20_{date}.csv"
 COMBINED_RISKY_CSV_TEMPLATE = "RISKLI5_5GUN_VE_15GUN_BIRLESIK_{date}.csv"
 COMBINED_RISKY_XLSX_TEMPLATE = "RISKLI5_5GUN_VE_15GUN_BIRLESIK_{date}.xlsx"
 
+# --- Best daily file scoring weights ---
+BEST_FILE_WEIGHT_5D = 0.5  # Weight for 5-day return in overall score calculation
+
 # --- v3 backtest + mining default config ---
 DEFAULT_CONFIG = {
     "dir": BASE_DIR,
@@ -831,10 +834,10 @@ def apply_best_combos_to_backtest(
     
     # FİX: En güncel tarihe göre filtrele
     rows_before_filter = len(df_all)
+    df_all_temp = df_all.copy()  # Initialize early to avoid scope issues
     
     if COL_ANALIZ_TARIHI in df_all.columns:
         # Tarih kolonunu parse et
-        df_all_temp = df_all.copy()
         df_all_temp[COL_ANALIZ_TARIHI] = pd.to_datetime(df_all_temp[COL_ANALIZ_TARIHI], errors="coerce")
         
         # En güncel tarihi bul
@@ -1522,6 +1525,12 @@ def run_selection_v5_from_backtest(cfg: Optional[Dict] = None):
       - COMBO_MINED5_SHORT_YYYY-MM-DD.csv
       - COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv
     kullanarak 3 liste + birleşik riskli liste üret.
+    
+    Ayrıca üretilen listelerin performansını değerlendirip en iyi dosyayı
+    BEST_DAILY_FILE_{date}.txt olarak raporlar.
+    
+    Args:
+        cfg: Configuration dictionary (verbose, etc.). If None, uses DEFAULT_CONFIG.
     """
     if cfg is None:
         cfg = DEFAULT_CONFIG.copy()
@@ -1667,17 +1676,18 @@ def compute_best_daily_file(date_str: str, verbose: bool = False):
                 matching = df_backtest[df_backtest[COL_SYMBOL].isin(symbols)]
                 
                 if not matching.empty and COL_MAX_5 in matching.columns:
-                    # Compute metrics
+                    # Compute metrics based on Max_Getiri_% (5-day max return)
                     max_5 = pd.to_numeric(matching[COL_MAX_5], errors="coerce")
                     
-                    # Mean 1-day forward return approximation (using Max_Getiri_%)
-                    mean_ret_1d = max_5.mean()
+                    # Mean max return over 5 days
+                    mean_ret_5d = max_5.mean()
                     
                     # Hit rate (% positive returns)
                     hit_rate = (max_5 > 0).mean() * 100
                     
-                    # Mean 1-5 day average (using Max_Getiri_%)
-                    mean_ret_5d = max_5.mean()
+                    # Note: We use Max_Getiri_% as a proxy for both 1-day and 5-day performance
+                    # since detailed daily returns are not available in this backtest format
+                    mean_ret_1d = mean_ret_5d  # Same value, representing overall performance
                     
                     results.append({
                         "filename": filename,
@@ -1686,7 +1696,7 @@ def compute_best_daily_file(date_str: str, verbose: bool = False):
                         "mean_ret_1d": mean_ret_1d,
                         "mean_ret_5d": mean_ret_5d,
                         "hit_rate": hit_rate,
-                        "score": mean_ret_1d + mean_ret_5d * 0.5  # Weighted score
+                        "score": mean_ret_1d + mean_ret_5d * BEST_FILE_WEIGHT_5D
                     })
         except Exception as e:
             if verbose:
