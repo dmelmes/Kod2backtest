@@ -930,6 +930,11 @@ def apply_best_combos_to_backtest(
         best_means = []
         best_risks = []
         best_ids = []
+        
+        # Diagnostic: Track missing columns and failed conditions
+        missing_columns = set()
+        total_combos_checked = 0
+        combos_with_missing_cols = 0
 
         for _, row in df_src.iterrows():
             best_mean = None
@@ -937,6 +942,7 @@ def apply_best_combos_to_backtest(
             best_id = None
 
             for idx, combo in enumerate(records):
+                total_combos_checked += 1
                 conditions = combo.get("conditions", [])
                 if not isinstance(conditions, list):
                     continue
@@ -950,6 +956,8 @@ def apply_best_combos_to_backtest(
                     op = cond.get("op")
                     val = cond.get("val")
                     if col not in df_src.columns:
+                        missing_columns.add(col)
+                        combos_with_missing_cols += 1
                         ok = False
                         break
                     v = row.get(col, np.nan)
@@ -1002,6 +1010,11 @@ def apply_best_combos_to_backtest(
         df_src[col_mean] = best_means
         df_src[col_risk] = best_risks
         df_src[col_id] = best_ids
+        
+        # Print diagnostic info if there are issues
+        if missing_columns:
+            print(f"[Uyarı] {horizon}: {len(missing_columns)} kolon eksik, {combos_with_missing_cols} combo atlandı.")
+            print(f"        Eksik kolonlar: {', '.join(sorted(list(missing_columns))[:10])}")
 
         return df_src
 
