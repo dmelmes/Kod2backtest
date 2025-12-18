@@ -1626,102 +1626,72 @@ def run_selection_v5_from_backtest():
     df_selection = df_today
 
     
-    # 3. Combo dosyalarını bul - en iyi combolar zaten seçilmiş olmalı
-    # Önce BEST_COMBOS dosyalarını dene
-    best_5_low_path = os.path.join(BASE_DIR, BEST_5D_LOW_TEMPLATE.format(date=selection_date_str))
-    best_5_high_path = os.path.join(BASE_DIR, BEST_5D_HIGH_TEMPLATE.format(date=selection_date_str))
-    best_15_low_path = os.path.join(BASE_DIR, BEST_15D_LOW_TEMPLATE.format(date=selection_date_str))
+    # 3. Combo dosyalarını COMBO_MINED5'ten yükle ve backtest üzerinden değerlendir
+    # NOT: BEST_COMBOS dosyaları başka bir script tarafından üretildiği için kullanmıyoruz
+    print(f"[Bilgi] Combo dosyalarını COMBO_MINED5'ten yüklüyor...")
     
-    # Eğer BEST_COMBOS dosyaları varsa onları kullan
-    if os.path.isfile(best_5_low_path) and os.path.isfile(best_5_high_path):
-        print(f"[Bilgi] Hazır BEST_COMBOS dosyaları kullanılıyor...")
-        best_5_low = pd.read_csv(best_5_low_path)
-        best_5_high = pd.read_csv(best_5_high_path)
-        if os.path.isfile(best_15_low_path):
-            best_15_low = pd.read_csv(best_15_low_path)
-        else:
-            best_15_low = pd.DataFrame()
-        
-        # Parse JSON conditions from BEST_COMBOS files
-        def safe_json_parse(x):
-            """Safely parse JSON string to list, return empty list if invalid"""
-            if pd.isna(x) or x == '' or x is None:
-                return []
-            if isinstance(x, list):
-                return x
-            if isinstance(x, str):
-                try:
-                    return json.loads(x)
-                except (json.JSONDecodeError, ValueError):
-                    return []
+    combo_short_path, combo_mid_path = detect_latest_combo_files(BASE_DIR, selection_date_str)
+    
+    if not combo_short_path or not combo_mid_path:
+        print(f"[Hata] COMBO_MINED5 dosyaları bulunamadı (hedef tarih: {selection_date_str}).")
+        print("       Lütfen backtest5.py'yi --run-backtest ile çalıştırarak combo dosyalarını oluşturun.")
+        return
+
+    print(f"[Bilgi] Kullanılacak combo5 short dosyası: {combo_short_path}")
+    print(f"[Bilgi] Kullanılacak combo5 mid dosyası:   {combo_mid_path}")
+
+    combos_short_df = pd.read_csv(combo_short_path)
+    combos_mid_df = pd.read_csv(combo_mid_path)
+
+    if "conditions" not in combos_short_df.columns or "conditions" not in combos_mid_df.columns:
+        print("[Hata] COMBO_MINED5 dosyalarında 'conditions' kolonu yok.")
+        return
+    
+    # Parse JSON conditions from COMBO_MINED5 files
+    def safe_json_parse(x):
+        """Safely parse JSON string to list, return empty list if invalid"""
+        if pd.isna(x) or x == '' or x is None:
             return []
-        
-        if "conditions" in best_5_low.columns:
-            best_5_low["conditions"] = best_5_low["conditions"].apply(safe_json_parse)
-        if "conditions" in best_5_high.columns:
-            best_5_high["conditions"] = best_5_high["conditions"].apply(safe_json_parse)
-        if "conditions" in best_15_low.columns and not best_15_low.empty:
-            best_15_low["conditions"] = best_15_low["conditions"].apply(safe_json_parse)
+        if isinstance(x, list):
+            return x
+        if isinstance(x, str):
+            try:
+                return json.loads(x)
+            except (json.JSONDecodeError, ValueError):
+                return []
+        return []
+    
+    combos_short_df["conditions"] = combos_short_df["conditions"].apply(safe_json_parse)
+    combos_mid_df["conditions"] = combos_mid_df["conditions"].apply(safe_json_parse)
+    
+    # Backtest verisini yükleyip comboları değerlendir
+    back_path = detect_latest_backtest_csv(BASE_DIR)
+    if not back_path:
+        print("[Uyarı] Backtest dosyası bulunamadı, tüm comboları kullanacağız.")
+        # Tüm comboları kullan (değerlendirme yapmadan)
+        best_5_low = combos_short_df.head(20)
+        best_5_high = combos_short_df.head(20)
+        best_15_low = combos_mid_df.head(20) if not combos_mid_df.empty else pd.DataFrame()
     else:
-        # BEST_COMBOS yoksa, COMBO_MINED5 dosyalarından yükle ve backtest üzerinden değerlendir
-        print(f"[Bilgi] BEST_COMBOS dosyaları bulunamadı, combo dosyaları değerlendiriliyor...")
+        # Backtest ile değerlendir
+        df_backtest = pd.read_csv(back_path)
         
-        combo_short_path, combo_mid_path = detect_latest_combo_files(BASE_DIR, selection_date_str)
-        
-        if not combo_short_path or not combo_mid_path:
-            print(f"[Hata] COMBO_MINED5 dosyaları bulunamadı (hedef tarih: {selection_date_str}).")
-            print("       Lütfen backtest5.py'yi --run-backtest ile çalıştırarak combo dosyalarını oluşturun.")
-            return
+        combos_all_df = pd.concat(
+            [
+                combos_short_df.assign(target="short"),
+                combos_mid_df.assign(target="mid15"),
+            ],
+            ignore_index=True,
+        )
 
-        print(f"[Bilgi] Kullanılacak combo5 short dosyası: {combo_short_path}")
-        print(f"[Bilgi] Kullanılacak combo5 mid dosyası:   {combo_mid_path}")
-
-        combos_short_df = pd.read_csv(combo_short_path)
-        combos_mid_df = pd.read_csv(combo_mid_path)
-
-        if "conditions" not in combos_short_df.columns or "conditions" not in combos_mid_df.columns:
-            print("[Hata] COMBO_MINED5 dosyalarında 'conditions' kolonu yok.")
-            return
-        
-        # Backtest verisini yükleyip combolan değerlendir
-        back_path = detect_latest_backtest_csv(BASE_DIR)
-        if not back_path:
-            print("[Uyarı] Backtest dosyası bulunamadı, tüm comboları kullanacağız.")
-            # Tüm comboları kullan (değerlendirme yapmadan)
+        df_stats_all = compute_combo_stats(df_backtest, combos_all_df)
+        if df_stats_all.empty:
+            print("[Uyarı] Combo istatistikleri hesaplanamadı, tüm comboları kullanacağız.")
             best_5_low = combos_short_df.head(20)
             best_5_high = combos_short_df.head(20)
             best_15_low = combos_mid_df.head(20) if not combos_mid_df.empty else pd.DataFrame()
         else:
-            # Backtest ile değerlendir
-            df_backtest = pd.read_csv(back_path)
-            
-            combos_all_df = pd.concat(
-                [
-                    combos_short_df.assign(target="short"),
-                    combos_mid_df.assign(target="mid15"),
-                ],
-                ignore_index=True,
-            )
-
-            df_stats_all = compute_combo_stats(df_backtest, combos_all_df)
-            if df_stats_all.empty:
-                print("[Uyarı] Combo istatistikleri hesaplanamadı, tüm comboları kullanacağız.")
-                best_5_low = combos_short_df.head(20)
-                best_5_high = combos_short_df.head(20)
-                best_15_low = combos_mid_df.head(20) if not combos_mid_df.empty else pd.DataFrame()
-            else:
-                best_5_low, best_5_high, best_15_low = select_best_combos(df_stats_all)
-
-        # Seçilen en iyi kuralları kaydet
-        if not best_5_low.empty:
-            best_5_low.to_csv(best_5_low_path, index=False, encoding="utf-8-sig")
-            print(f"[ÇIKTI] {best_5_low_path}")
-        if not best_5_high.empty:
-            best_5_high.to_csv(best_5_high_path, index=False, encoding="utf-8-sig")
-            print(f"[ÇIKTI] {best_5_high_path}")
-        if not best_15_low.empty:
-            best_15_low.to_csv(best_15_low_path, index=False, encoding="utf-8-sig")
-            print(f"[ÇIKTI] {best_15_low_path}")
+            best_5_low, best_5_high, best_15_low = select_best_combos(df_stats_all)
 
     # 4. En iyi comboları BUGÜNÜN verisine uygula
     print(f"[Bilgi] En iyi combolar bugünün multim4 verisine uygulanıyor...")
