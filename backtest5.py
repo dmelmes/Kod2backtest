@@ -482,6 +482,101 @@ def detect_latest_backtest_csv(folder: str) -> Optional[str]:
     return os.path.join(folder, latest_file)
 
 
+def detect_latest_multim4(folder: str) -> Optional[Tuple[str, str]]:
+    """
+    Klasördeki en güncel multim4_YYYY-MM-DD.csv dosyasını bulur.
+    Returns: (date_str, full_path) tuple or None
+    """
+    pattern = re.compile(r"^multim4_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    candidates = []
+    for fname in os.listdir(folder):
+        m = pattern.match(fname)
+        if m:
+            date_str = m.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    _, date_str, file_path = candidates[-1]
+    return (date_str, file_path)
+
+
+def detect_latest_combo_files(folder: str, target_date: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Klasördeki COMBO_MINED5_SHORT_YYYY-MM-DD.csv ve COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv 
+    dosyalarını bulur. Önce target_date'i arar, bulamazsa en güncel tarihi kullanır.
+    
+    Returns: (short_path, mid_path) tuple
+    """
+    pattern_short = re.compile(r"^COMBO_MINED5_SHORT_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    pattern_mid = re.compile(r"^COMBO_MINED5_MID_15GUN_(\d{4}-\d{2}-\d{2})\.csv$", re.IGNORECASE)
+    
+    short_candidates = []
+    mid_candidates = []
+    
+    for fname in os.listdir(folder):
+        m_short = pattern_short.match(fname)
+        if m_short:
+            date_str = m_short.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                short_candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+        
+        m_mid = pattern_mid.match(fname)
+        if m_mid:
+            date_str = m_mid.group(1)
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                mid_candidates.append((d, date_str, os.path.join(folder, fname)))
+            except Exception:
+                continue
+    
+    if not short_candidates or not mid_candidates:
+        return None, None
+    
+    short_candidates.sort(key=lambda x: x[0])
+    mid_candidates.sort(key=lambda x: x[0])
+    
+    # Try to find target_date first
+    short_path = None
+    mid_path = None
+    
+    if target_date:
+        for d, date_str, path in short_candidates:
+            if date_str == target_date:
+                short_path = path
+                break
+        for d, date_str, path in mid_candidates:
+            if date_str == target_date:
+                mid_path = path
+                break
+    
+    # Fallback to latest available, but both must have the same date
+    if not short_path or not mid_path:
+        # Find common dates between short and mid
+        short_dates = {date_str: path for d, date_str, path in short_candidates}
+        mid_dates = {date_str: path for d, date_str, path in mid_candidates}
+        common_dates = sorted(set(short_dates.keys()) & set(mid_dates.keys()))
+        
+        if common_dates:
+            latest_common_date = common_dates[-1]
+            short_path = short_dates[latest_common_date]
+            mid_path = mid_dates[latest_common_date]
+            if target_date and latest_common_date != target_date:
+                print(f"[Uyarı] Hedef tarih {target_date} için combo dosyaları bulunamadı. "
+                      f"En güncel ortak tarih kullanılıyor: {latest_common_date}")
+        else:
+            return None, None
+    
+    return short_path, mid_path
+
+
 def smart_to_numeric_b4(series: pd.Series) -> pd.Series:
     """backtest4'teki versiyon (isim çakışmasın diye)."""
     return smart_to_numeric(series)
@@ -810,6 +905,18 @@ def apply_best_combos_to_backtest(
     folder: str,
 ):
     """Seçilen combo setlerini GERCEK_BACKTEST5 satırlarına uygula ve listeleri üret (backtest4 mantığı)."""
+    
+    # Date/time columns to exclude from combo conditions when applying to new data
+    DATE_COLS_TO_EXCLUDE = {"EW_AsOf_1d", "EW_AsOf_4h", "Analiz_Tarihi_str"}
+    
+    def _filter_technical_conditions(conditions: List[Dict]) -> List[Dict]:
+        """
+        Filter out date/timestamp conditions from combos.
+        These columns represent WHEN a pattern was observed, not technical indicator values.
+        """
+        if not isinstance(conditions, list):
+            return []
+        return [c for c in conditions if c.get("col") not in DATE_COLS_TO_EXCLUDE]
 
     def _apply_combo_set(df_src: pd.DataFrame, df_combos: pd.DataFrame, horizon: str):
         df_src = df_src.copy()
@@ -835,18 +942,37 @@ def apply_best_combos_to_backtest(
         best_means = []
         best_risks = []
         best_ids = []
+        
+        # Diagnostic: Track missing columns and failed conditions
+        missing_columns = set()
+        total_rows = 0
+        total_combos = len(records)
+        rows_with_matches = 0
+        condition_failures = {"missing_col": 0, "value_mismatch": 0, "bin_mismatch": 0}
+        combos_with_no_conditions = 0
+        total_conditions_checked = 0
 
         for _, row in df_src.iterrows():
+            total_rows += 1
             best_mean = None
             best_risk = None
             best_id = None
+            row_matched_any = False
 
             for idx, combo in enumerate(records):
                 conditions = combo.get("conditions", [])
                 if not isinstance(conditions, list):
                     continue
+                
+                # Filter out date/timestamp conditions - only keep technical indicators
+                conditions = _filter_technical_conditions(conditions)
+                
+                if len(conditions) == 0:
+                    combos_with_no_conditions += 1
 
+                total_conditions_checked += len(conditions)
                 ok = True
+                fail_reason = None
                 for cond in conditions:
                     if not isinstance(cond, dict):
                         ok = False
@@ -855,28 +981,38 @@ def apply_best_combos_to_backtest(
                     op = cond.get("op")
                     val = cond.get("val")
                     if col not in df_src.columns:
+                        missing_columns.add(col)
+                        condition_failures["missing_col"] += 1
                         ok = False
+                        fail_reason = "missing_col"
                         break
                     v = row.get(col, np.nan)
                     if op == "==":
                         if pd.isna(v) or v != val:
+                            condition_failures["value_mismatch"] += 1
                             ok = False
+                            fail_reason = "value_mismatch"
                             break
                     elif op == "in_bin":
                         vv = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
                         if pd.isna(vv):
                             ok = False
+                            fail_reason = "value_mismatch"
                             break
                         left = val.get("left", -np.inf)
                         right = val.get("right", np.inf)
                         closed = val.get("closed", "right")
                         if closed == "right":
                             if not (vv > left and vv <= right):
+                                condition_failures["bin_mismatch"] += 1
                                 ok = False
+                                fail_reason = "bin_mismatch"
                                 break
                         else:
                             if not (vv >= left and vv < right):
+                                condition_failures["bin_mismatch"] += 1
                                 ok = False
+                                fail_reason = "bin_mismatch"
                                 break
                     else:
                         ok = False
@@ -899,7 +1035,11 @@ def apply_best_combos_to_backtest(
                     best_mean = m
                     best_risk = r
                     best_id = f"combo_{idx}"
+                    row_matched_any = True
 
+            if row_matched_any:
+                rows_with_matches += 1
+                
             best_means.append(best_mean)
             best_risks.append(best_risk)
             best_ids.append(best_id)
@@ -907,6 +1047,21 @@ def apply_best_combos_to_backtest(
         df_src[col_mean] = best_means
         df_src[col_risk] = best_risks
         df_src[col_id] = best_ids
+        
+        # Print diagnostic info
+        print(f"[Debug] {horizon}: {total_rows} satır, {total_combos} combo kontrol edildi")
+        print(f"        {rows_with_matches} satırda en az 1 combo eşleşti")
+        print(f"[Debug] Combo detayları:")
+        print(f"        Koşulsuz combo: {combos_with_no_conditions} adet")
+        print(f"        Toplam koşul sayısı: {total_conditions_checked}")
+        if missing_columns:
+            print(f"[Uyarı] {len(missing_columns)} kolon eksik:")
+            print(f"        {', '.join(sorted(list(missing_columns))[:15])}")
+        # Always show failure stats
+        print(f"[Debug] Başarısızlık nedenleri:")
+        print(f"        Eksik kolon: {condition_failures['missing_col']} kez")
+        print(f"        Değer uyuşmazlığı: {condition_failures['value_mismatch']} kez")
+        print(f"        Bin aralığı dışı: {condition_failures['bin_mismatch']} kez")
 
         return df_src
 
@@ -1439,34 +1594,62 @@ def run_selection_v5_from_backtest():
     """
     backtest4 mantığını, v5 backtest & v5 combo dosyalarıyla çalıştır.
     Yani:
-      - GERCEK_BACKTEST5_TO_LATEST_YYYY-MM-DD.csv
-      - COMBO_MINED5_SHORT_YYYY-MM-DD.csv
+      - En güncel multim4_YYYY-MM-DD.csv (BUGÜNÜN VERİSİ)
+      - COMBO_MINED5_SHORT_YYYY-MM-DD.csv (GEÇMİŞTEN ÖĞREN İLEN PATTERN'LER)
       - COMBO_MINED5_MID_15GUN_YYYY-MM-DD.csv
     kullanarak 3 liste + birleşik riskli liste üret.
+    
+    ÖNEMLİ: Öğrenilen pattern'leri BUGÜNÜN multim4 verisine uygular.
     """
-    back_path = detect_latest_backtest_csv(BASE_DIR)
-    if not back_path:
-        print("[Hata] GERCEK_BACKTEST5_TO_LATEST_YYYY-MM-DD.csv bulunamadı.")
+    # 1. En güncel multim4 dosyasını yükle (BUGÜNÜN VERİSİ)
+    multim_info = detect_latest_multim4(BASE_DIR)
+    if not multim_info:
+        print("[Hata] multim4_YYYY-MM-DD.csv dosyası bulunamadı. Seçim yapılamaz.")
         return
+    
+    selection_date_str, multim_path = multim_info
+    print(f"[Bilgi] Seçim tarihi (en güncel multim4): {selection_date_str}")
+    print(f"[Bilgi] Multim4 dosyası: {multim_path}")
 
-    print(f"[Bilgi] Kullanılacak backtest5 dosyası: {back_path}")
-    df_all = pd.read_csv(back_path)
-
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(back_path))
-    if m:
-        today_str = m.group(1)
-    else:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-    # V5 combo dosyaları
-    combo_short_path = os.path.join(BASE_DIR, f"COMBO_MINED5_SHORT_{today_str}.csv")
-    combo_mid_path = os.path.join(BASE_DIR, f"COMBO_MINED5_MID_15GUN_{today_str}.csv")
-
-    if not os.path.isfile(combo_short_path):
-        print(f"[Hata] {combo_short_path} bulunamadı.")
+    # 2. Bugünün multim4 verisini yükle
+    df_today = _read_csv_any(multim_path)
+    if df_today is None or df_today.empty:
+        print(f"[Hata] Multim4 dosyası okunamadı veya boş: {multim_path}")
         return
-    if not os.path.isfile(combo_mid_path):
-        print(f"[Hata] {combo_mid_path} bulunamadı.")
+    
+    # Symbol ve price kolonlarını bul
+    sym_col, price_col = resolve_symbol_and_price_columns(df_today)
+    if not sym_col or not price_col:
+        print(f"[Hata] Multim4 dosyasında Sembol ve Fiyat kolonları bulunamadı.")
+        return
+    
+    # Sembol normalizasyonu
+    df_today[sym_col] = df_today[sym_col].astype(str).str.strip().str.upper()
+    
+    # Analiz tarihi ekle (bu satırlar bugünün analizi için)
+    df_today[COL_ANALIZ_TARIHI] = selection_date_str
+    
+    # Kolon isimlendirmelerini standartlaştır
+    if sym_col != COL_SYMBOL:
+        df_today = df_today.rename(columns={sym_col: COL_SYMBOL})
+    if price_col != COL_FIYAT_SON:
+        df_today = df_today.rename(columns={price_col: COL_FIYAT_SON})
+    
+    print(f"[Bilgi] Bugünün multim4 verisi yüklendi: {len(df_today)} satır")
+    
+    # Use today's data for selection
+    df_selection = df_today
+
+    
+    # 3. Combo dosyalarını COMBO_MINED5'ten yükle ve backtest üzerinden değerlendir
+    # NOT: BEST_COMBOS dosyaları başka bir script tarafından üretildiği için kullanmıyoruz
+    print(f"[Bilgi] Combo dosyalarını COMBO_MINED5'ten yüklüyor...")
+    
+    combo_short_path, combo_mid_path = detect_latest_combo_files(BASE_DIR, selection_date_str)
+    
+    if not combo_short_path or not combo_mid_path:
+        print(f"[Hata] COMBO_MINED5 dosyaları bulunamadı (hedef tarih: {selection_date_str}).")
+        print("       Lütfen backtest5.py'yi --run-backtest ile çalıştırarak combo dosyalarını oluşturun.")
         return
 
     print(f"[Bilgi] Kullanılacak combo5 short dosyası: {combo_short_path}")
@@ -1478,44 +1661,61 @@ def run_selection_v5_from_backtest():
     if "conditions" not in combos_short_df.columns or "conditions" not in combos_mid_df.columns:
         print("[Hata] COMBO_MINED5 dosyalarında 'conditions' kolonu yok.")
         return
+    
+    # Parse JSON conditions from COMBO_MINED5 files
+    def safe_json_parse(x):
+        """Safely parse JSON string to list, return empty list if invalid"""
+        if pd.isna(x) or x == '' or x is None:
+            return []
+        if isinstance(x, list):
+            return x
+        if isinstance(x, str):
+            try:
+                return json.loads(x)
+            except (json.JSONDecodeError, ValueError):
+                return []
+        return []
+    
+    combos_short_df["conditions"] = combos_short_df["conditions"].apply(safe_json_parse)
+    combos_mid_df["conditions"] = combos_mid_df["conditions"].apply(safe_json_parse)
+    
+    # Backtest verisini yükleyip comboları değerlendir
+    back_path = detect_latest_backtest_csv(BASE_DIR)
+    if not back_path:
+        print("[Uyarı] Backtest dosyası bulunamadı, tüm comboları kullanacağız.")
+        # Tüm comboları kullan (değerlendirme yapmadan)
+        best_5_low = combos_short_df.head(20)
+        best_5_high = combos_short_df.head(20)
+        best_15_low = combos_mid_df.head(20) if not combos_mid_df.empty else pd.DataFrame()
+    else:
+        # Backtest ile değerlendir
+        df_backtest = pd.read_csv(back_path)
+        
+        combos_all_df = pd.concat(
+            [
+                combos_short_df.assign(target="short"),
+                combos_mid_df.assign(target="mid15"),
+            ],
+            ignore_index=True,
+        )
 
-    # Tek birleşik DataFrame'e alıp istatistik hesaplayacağız:
-    combos_all_df = pd.concat(
-        [
-            combos_short_df.assign(target="short"),
-            combos_mid_df.assign(target="mid15"),
-        ],
-        ignore_index=True,
-    )
+        df_stats_all = compute_combo_stats(df_backtest, combos_all_df)
+        if df_stats_all.empty:
+            print("[Uyarı] Combo istatistikleri hesaplanamadı, tüm comboları kullanacağız.")
+            best_5_low = combos_short_df.head(20)
+            best_5_high = combos_short_df.head(20)
+            best_15_low = combos_mid_df.head(20) if not combos_mid_df.empty else pd.DataFrame()
+        else:
+            best_5_low, best_5_high, best_15_low = select_best_combos(df_stats_all)
 
-    df_stats_all = compute_combo_stats(df_all, combos_all_df)
-    if df_stats_all.empty:
-        print("[Hata] Hiç geçerli combo5 istatistiği üretilemedi.")
-        return
-
-    best_5_low, best_5_high, best_15_low = select_best_combos(df_stats_all)
-
-    # Seçilen en iyi kuralları geri CSV olarak da saklayabiliriz (opsiyonel):
-    if not best_5_low.empty:
-        path_5_low = os.path.join(BASE_DIR, BEST_5D_LOW_TEMPLATE.format(date=today_str))
-        best_5_low.to_csv(path_5_low, index=False, encoding="utf-8-sig")
-        print(f"[ÇIKTI] {path_5_low}")
-    if not best_5_high.empty:
-        path_5_high = os.path.join(BASE_DIR, BEST_5D_HIGH_TEMPLATE.format(date=today_str))
-        best_5_high.to_csv(path_5_high, index=False, encoding="utf-8-sig")
-        print(f"[ÇIKTI] {path_5_high}")
-    if not best_15_low.empty:
-        path_15_low = os.path.join(BASE_DIR, BEST_15D_LOW_TEMPLATE.format(date=today_str))
-        best_15_low.to_csv(path_15_low, index=False, encoding="utf-8-sig")
-        print(f"[ÇIKTI] {path_15_low}")
-
-    # backtest4 ile aynı liste üretim mantığı ama v5 isimleriyle
+    # 4. En iyi comboları BUGÜNÜN verisine uygula
+    print(f"[Bilgi] En iyi combolar bugünün multim4 verisine uygulanıyor...")
     apply_best_combos_to_backtest(
-        df_all,
+        df_selection,
         best_5_low,
         best_5_high,
         best_15_low,
-        today_str,
+        selection_date_str,
         BASE_DIR,
     )
 
