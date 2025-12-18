@@ -1643,18 +1643,25 @@ def run_selection_v5_from_backtest():
             best_15_low = pd.DataFrame()
         
         # Parse JSON conditions from BEST_COMBOS files
+        def safe_json_parse(x):
+            """Safely parse JSON string to list, return empty list if invalid"""
+            if pd.isna(x) or x == '' or x is None:
+                return []
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str):
+                try:
+                    return json.loads(x)
+                except (json.JSONDecodeError, ValueError):
+                    return []
+            return []
+        
         if "conditions" in best_5_low.columns:
-            best_5_low["conditions"] = best_5_low["conditions"].apply(
-                lambda x: json.loads(x) if isinstance(x, str) else x
-            )
+            best_5_low["conditions"] = best_5_low["conditions"].apply(safe_json_parse)
         if "conditions" in best_5_high.columns:
-            best_5_high["conditions"] = best_5_high["conditions"].apply(
-                lambda x: json.loads(x) if isinstance(x, str) else x
-            )
+            best_5_high["conditions"] = best_5_high["conditions"].apply(safe_json_parse)
         if "conditions" in best_15_low.columns and not best_15_low.empty:
-            best_15_low["conditions"] = best_15_low["conditions"].apply(
-                lambda x: json.loads(x) if isinstance(x, str) else x
-            )
+            best_15_low["conditions"] = best_15_low["conditions"].apply(safe_json_parse)
     else:
         # BEST_COMBOS yoksa, COMBO_MINED5 dosyalarından yükle ve backtest üzerinden değerlendir
         print(f"[Bilgi] BEST_COMBOS dosyaları bulunamadı, combo dosyaları değerlendiriliyor...")
