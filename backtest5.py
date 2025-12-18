@@ -1641,6 +1641,20 @@ def run_selection_v5_from_backtest():
             best_15_low = pd.read_csv(best_15_low_path)
         else:
             best_15_low = pd.DataFrame()
+        
+        # Parse JSON conditions from BEST_COMBOS files
+        if "conditions" in best_5_low.columns:
+            best_5_low["conditions"] = best_5_low["conditions"].apply(
+                lambda x: json.loads(x) if isinstance(x, str) else x
+            )
+        if "conditions" in best_5_high.columns:
+            best_5_high["conditions"] = best_5_high["conditions"].apply(
+                lambda x: json.loads(x) if isinstance(x, str) else x
+            )
+        if "conditions" in best_15_low.columns and not best_15_low.empty:
+            best_15_low["conditions"] = best_15_low["conditions"].apply(
+                lambda x: json.loads(x) if isinstance(x, str) else x
+            )
     else:
         # BEST_COMBOS yoksa, COMBO_MINED5 dosyalarından yükle ve backtest üzerinden değerlendir
         print(f"[Bilgi] BEST_COMBOS dosyaları bulunamadı, combo dosyaları değerlendiriliyor...")
