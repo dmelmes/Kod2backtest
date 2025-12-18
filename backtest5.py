@@ -905,6 +905,18 @@ def apply_best_combos_to_backtest(
     folder: str,
 ):
     """Seçilen combo setlerini GERCEK_BACKTEST5 satırlarına uygula ve listeleri üret (backtest4 mantığı)."""
+    
+    # Date/time columns to exclude from combo conditions when applying to new data
+    DATE_COLS_TO_EXCLUDE = {"EW_AsOf_1d", "EW_AsOf_4h", "Analiz_Tarihi_str"}
+    
+    def _filter_technical_conditions(conditions: List[Dict]) -> List[Dict]:
+        """
+        Filter out date/timestamp conditions from combos.
+        These columns represent WHEN a pattern was observed, not technical indicator values.
+        """
+        if not isinstance(conditions, list):
+            return []
+        return [c for c in conditions if c.get("col") not in DATE_COLS_TO_EXCLUDE]
 
     def _apply_combo_set(df_src: pd.DataFrame, df_combos: pd.DataFrame, horizon: str):
         df_src = df_src.copy()
@@ -951,6 +963,9 @@ def apply_best_combos_to_backtest(
                 conditions = combo.get("conditions", [])
                 if not isinstance(conditions, list):
                     continue
+                
+                # Filter out date/timestamp conditions - only keep technical indicators
+                conditions = _filter_technical_conditions(conditions)
                 
                 if len(conditions) == 0:
                     combos_with_no_conditions += 1
