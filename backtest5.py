@@ -1033,11 +1033,11 @@ def apply_best_combos_to_backtest(
         if missing_columns:
             print(f"[Uyarı] {len(missing_columns)} kolon eksik:")
             print(f"        {', '.join(sorted(list(missing_columns))[:15])}")
-        if condition_failures["missing_col"] > 0 or condition_failures["value_mismatch"] > 0:
-            print(f"[Debug] Başarısızlık nedenleri:")
-            print(f"        Eksik kolon: {condition_failures['missing_col']} kez")
-            print(f"        Değer uyuşmazlığı: {condition_failures['value_mismatch']} kez")
-            print(f"        Bin aralığı dışı: {condition_failures['bin_mismatch']} kez")
+        # Always show failure stats if there were any failures
+        print(f"[Debug] Başarısızlık nedenleri:")
+        print(f"        Eksik kolon: {condition_failures['missing_col']} kez")
+        print(f"        Değer uyuşmazlığı: {condition_failures['value_mismatch']} kez")
+        print(f"        Bin aralığı dışı: {condition_failures['bin_mismatch']} kez")
 
         return df_src
 
