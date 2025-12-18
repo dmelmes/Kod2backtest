@@ -937,6 +937,8 @@ def apply_best_combos_to_backtest(
         total_combos = len(records)
         rows_with_matches = 0
         condition_failures = {"missing_col": 0, "value_mismatch": 0, "bin_mismatch": 0}
+        combos_with_no_conditions = 0
+        total_conditions_checked = 0
 
         for _, row in df_src.iterrows():
             total_rows += 1
@@ -949,7 +951,11 @@ def apply_best_combos_to_backtest(
                 conditions = combo.get("conditions", [])
                 if not isinstance(conditions, list):
                     continue
+                
+                if len(conditions) == 0:
+                    combos_with_no_conditions += 1
 
+                total_conditions_checked += len(conditions)
                 ok = True
                 fail_reason = None
                 for cond in conditions:
@@ -1030,10 +1036,13 @@ def apply_best_combos_to_backtest(
         # Print diagnostic info
         print(f"[Debug] {horizon}: {total_rows} satır, {total_combos} combo kontrol edildi")
         print(f"        {rows_with_matches} satırda en az 1 combo eşleşti")
+        print(f"[Debug] Combo detayları:")
+        print(f"        Koşulsuz combo: {combos_with_no_conditions} adet")
+        print(f"        Toplam koşul sayısı: {total_conditions_checked}")
         if missing_columns:
             print(f"[Uyarı] {len(missing_columns)} kolon eksik:")
             print(f"        {', '.join(sorted(list(missing_columns))[:15])}")
-        # Always show failure stats if there were any failures
+        # Always show failure stats
         print(f"[Debug] Başarısızlık nedenleri:")
         print(f"        Eksik kolon: {condition_failures['missing_col']} kez")
         print(f"        Değer uyuşmazlığı: {condition_failures['value_mismatch']} kez")
