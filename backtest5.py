@@ -200,7 +200,7 @@ def _read_csv_any(path: str, on_bad_lines="skip") -> Optional[pd.DataFrame]:
     """Farklı encoding denemeleriyle CSV oku."""
     for enc in ["utf-8-sig", "utf-16", "latin1", "cp1254", "cp1252"]:
         try:
-            df = pd.read_csv(path, encoding=enc, engine="python", on_bad_lines=on_bad_lines, low_memory=False)
+            df = pd.read_csv(path, encoding=enc, engine="python", on_bad_lines=on_bad_lines)
             if df is not None:
                 df.columns = [str(c).strip() for c in df.columns]
                 return df
@@ -1559,7 +1559,7 @@ def run_selection_v5_from_backtest():
         return
 
     print(f"[Bilgi] Kullanılacak backtest5 dosyası: {back_path}")
-    df_all = pd.read_csv(back_path, low_memory=False)
+    df_all = pd.read_csv(back_path)
     
     # Symbol normalization for consistency
     if COL_SYMBOL in df_all.columns:
@@ -1603,8 +1603,8 @@ def run_selection_v5_from_backtest():
     print(f"[Bilgi] Kullanılacak combo5 short dosyası: {combo_short_path}")
     print(f"[Bilgi] Kullanılacak combo5 mid dosyası:   {combo_mid_path}")
 
-    combos_short_df = pd.read_csv(combo_short_path, low_memory=False)
-    combos_mid_df = pd.read_csv(combo_mid_path, low_memory=False)
+    combos_short_df = pd.read_csv(combo_short_path)
+    combos_mid_df = pd.read_csv(combo_mid_path)
 
     if "conditions" not in combos_short_df.columns or "conditions" not in combos_mid_df.columns:
         print("[Hata] COMBO_MINED5 dosyalarında 'conditions' kolonu yok.")
