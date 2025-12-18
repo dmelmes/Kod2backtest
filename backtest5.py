@@ -933,21 +933,25 @@ def apply_best_combos_to_backtest(
         
         # Diagnostic: Track missing columns and failed conditions
         missing_columns = set()
-        total_combos_checked = 0
-        combos_with_missing_cols = 0
+        total_rows = 0
+        total_combos = len(records)
+        rows_with_matches = 0
+        condition_failures = {"missing_col": 0, "value_mismatch": 0, "bin_mismatch": 0}
 
         for _, row in df_src.iterrows():
+            total_rows += 1
             best_mean = None
             best_risk = None
             best_id = None
+            row_matched_any = False
 
             for idx, combo in enumerate(records):
-                total_combos_checked += 1
                 conditions = combo.get("conditions", [])
                 if not isinstance(conditions, list):
                     continue
 
                 ok = True
+                fail_reason = None
                 for cond in conditions:
                     if not isinstance(cond, dict):
                         ok = False
@@ -957,29 +961,37 @@ def apply_best_combos_to_backtest(
                     val = cond.get("val")
                     if col not in df_src.columns:
                         missing_columns.add(col)
-                        combos_with_missing_cols += 1
+                        condition_failures["missing_col"] += 1
                         ok = False
+                        fail_reason = "missing_col"
                         break
                     v = row.get(col, np.nan)
                     if op == "==":
                         if pd.isna(v) or v != val:
+                            condition_failures["value_mismatch"] += 1
                             ok = False
+                            fail_reason = "value_mismatch"
                             break
                     elif op == "in_bin":
                         vv = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
                         if pd.isna(vv):
                             ok = False
+                            fail_reason = "value_mismatch"
                             break
                         left = val.get("left", -np.inf)
                         right = val.get("right", np.inf)
                         closed = val.get("closed", "right")
                         if closed == "right":
                             if not (vv > left and vv <= right):
+                                condition_failures["bin_mismatch"] += 1
                                 ok = False
+                                fail_reason = "bin_mismatch"
                                 break
                         else:
                             if not (vv >= left and vv < right):
+                                condition_failures["bin_mismatch"] += 1
                                 ok = False
+                                fail_reason = "bin_mismatch"
                                 break
                     else:
                         ok = False
@@ -1002,7 +1014,11 @@ def apply_best_combos_to_backtest(
                     best_mean = m
                     best_risk = r
                     best_id = f"combo_{idx}"
+                    row_matched_any = True
 
+            if row_matched_any:
+                rows_with_matches += 1
+                
             best_means.append(best_mean)
             best_risks.append(best_risk)
             best_ids.append(best_id)
@@ -1011,10 +1027,17 @@ def apply_best_combos_to_backtest(
         df_src[col_risk] = best_risks
         df_src[col_id] = best_ids
         
-        # Print diagnostic info if there are issues
+        # Print diagnostic info
+        print(f"[Debug] {horizon}: {total_rows} satır, {total_combos} combo kontrol edildi")
+        print(f"        {rows_with_matches} satırda en az 1 combo eşleşti")
         if missing_columns:
-            print(f"[Uyarı] {horizon}: {len(missing_columns)} kolon eksik, {combos_with_missing_cols} combo atlandı.")
-            print(f"        Eksik kolonlar: {', '.join(sorted(list(missing_columns))[:10])}")
+            print(f"[Uyarı] {len(missing_columns)} kolon eksik:")
+            print(f"        {', '.join(sorted(list(missing_columns))[:15])}")
+        if condition_failures["missing_col"] > 0 or condition_failures["value_mismatch"] > 0:
+            print(f"[Debug] Başarısızlık nedenleri:")
+            print(f"        Eksik kolon: {condition_failures['missing_col']} kez")
+            print(f"        Değer uyuşmazlığı: {condition_failures['value_mismatch']} kez")
+            print(f"        Bin aralığı dışı: {condition_failures['bin_mismatch']} kez")
 
         return df_src
 
